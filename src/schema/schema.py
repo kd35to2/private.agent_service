@@ -179,8 +179,9 @@ class ChatHistory(BaseModel):
 class UserThreadsInput(BaseModel):
     """Input for listing a user's conversation threads."""
 
-    user_id: str = Field(
-        description="User ID to list threads for.",
+    user_id: str | None = Field(
+        default=None,
+        description="User ID to list threads for. In account mode, defaults to the signed-in user.",
         examples=["847c6285-8fc9-4560-a83f-4e6285809254"],
     )
     limit: int = Field(

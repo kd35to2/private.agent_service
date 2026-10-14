@@ -3,11 +3,11 @@ import json
 import logging
 import warnings
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -28,6 +28,7 @@ from langgraph.types import Command, Interrupt
 from langsmith import Client as LangsmithClient
 from langsmith import uuid7
 
+from accounts.database import create_account_database
 from agents import DEFAULT_AGENT, AgentGraph, get_agent, get_all_agent_info, load_agent
 from core import settings
 from memory import initialize_database, initialize_store
@@ -43,6 +44,17 @@ from schema import (
     UserThreads,
     UserThreadsInput,
 )
+from service.account_auth import (
+    authorize_feedback,
+    authorize_thread,
+    bind_user_input,
+    current_user,
+    record_run,
+)
+from service.account_auth import (
+    router as account_router,
+)
+from service.account_page import router as account_page_router
 from service.agui import router as agui_router
 from service.threads import list_user_threads
 from service.utils import (
@@ -62,12 +74,19 @@ def custom_generate_unique_id(route: APIRoute) -> str:
     return route.name
 
 
-def verify_bearer(
+async def verify_bearer(
+    request: Request,
     http_auth: Annotated[
         HTTPAuthorizationCredentials | None,
         Depends(HTTPBearer(description="Please provide AUTH_SECRET api key.", auto_error=False)),
     ],
 ) -> None:
+    request.state.user = None
+    if settings.USER_AUTH_ENABLED is True:
+        if request.url.path == "/info":
+            return
+        request.state.user = await current_user(request, http_auth)
+        return
     if not settings.AUTH_SECRET:
         return
     auth_secret = settings.AUTH_SECRET.get_secret_value()
@@ -83,7 +102,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     try:
         # Initialize both checkpointer (for short-term memory) and store (for long-term memory)
-        async with initialize_database() as saver, initialize_store() as store:
+        async with (
+            AsyncExitStack() as resources,
+            initialize_database() as saver,
+            initialize_store() as store,
+        ):
+            if settings.USER_AUTH_ENABLED:
+                account_db = create_account_database()
+                resources.push_async_callback(account_db.close)
+                await account_db.setup()
+                app.state.account_database = account_db
             # Set up both components
             if hasattr(saver, "setup"):  # ignore: union-attr
                 await saver.setup()
@@ -91,7 +119,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             if hasattr(store, "setup"):  # ignore: union-attr
                 await store.setup()
 
-            if not settings.AUTH_SECRET:
+            if not settings.AUTH_SECRET and not settings.USER_AUTH_ENABLED:
                 logger.warning(
                     "AUTH_SECRET is not configured — all API endpoints are unauthenticated. "
                     "Set AUTH_SECRET in your environment to enable bearer token authentication."
@@ -119,6 +147,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(lifespan=lifespan, generate_unique_id_function=custom_generate_unique_id)
+app.include_router(account_router)
+app.include_router(account_page_router)
 router = APIRouter(dependencies=[Depends(verify_bearer)])
 # AG-UI protocol endpoints inherit the same bearer auth - see service/agui.py
 router.include_router(agui_router)
@@ -137,13 +167,20 @@ async def info() -> ServiceMetadata:
 
 
 async def _handle_input(
-    user_input: UserInput, agent: AgentGraph, agent_id: str
+    user_input: UserInput, agent: AgentGraph, agent_id: str, request: Request | None = None
 ) -> tuple[dict[str, Any], UUID]:
     """
     Parse user input and handle any required interrupt resumption.
     Returns kwargs for agent invocation and the run_id.
     """
+    if request is not None:
+        bind_user_input(user_input, request)
+        if getattr(request.state, "user", None) is not None:
+            assert user_input.thread_id is not None
+            await authorize_thread(request, agent, agent_id, user_input.thread_id, create=True)
     run_id = uuid7()
+    if request is not None:
+        await record_run(request, str(run_id))
     thread_id = user_input.thread_id or str(uuid4())
     user_id = user_input.user_id or str(uuid4())
 
@@ -161,7 +198,7 @@ async def _handle_input(
 
     if user_input.agent_config:
         # Check for reserved keys (including 'model' even if not in configurable)
-        reserved_keys = {"thread_id", "user_id", "model"}
+        reserved_keys = {"thread_id", "user_id", "model", "checkpoint_id", "checkpoint_ns"}
         if overlap := reserved_keys & user_input.agent_config.keys():
             raise HTTPException(
                 status_code=422,
@@ -200,7 +237,9 @@ async def _handle_input(
 
 @router.post("/{agent_id}/invoke", operation_id="invoke_with_agent_id")
 @router.post("/invoke")
-async def invoke(user_input: UserInput, agent_id: str = DEFAULT_AGENT) -> ChatMessage:
+async def invoke(
+    user_input: UserInput, request: Request, agent_id: str = DEFAULT_AGENT
+) -> ChatMessage:
     """
     Invoke an agent with user input to retrieve a final response.
 
@@ -215,7 +254,7 @@ async def invoke(user_input: UserInput, agent_id: str = DEFAULT_AGENT) -> ChatMe
     # you'd want to include it. You could update the API to return a list of ChatMessages
     # in that case.
     agent: AgentGraph = get_agent(agent_id)
-    kwargs, run_id = await _handle_input(user_input, agent, agent_id)
+    kwargs, run_id = await _handle_input(user_input, agent, agent_id, request)
 
     try:
         response_events: list[tuple[str, Any]] = await agent.ainvoke(**kwargs, stream_mode=["updates", "values"])  # type: ignore # fmt: skip
@@ -241,7 +280,7 @@ async def invoke(user_input: UserInput, agent_id: str = DEFAULT_AGENT) -> ChatMe
 
 
 async def message_generator(
-    user_input: StreamInput, agent_id: str = DEFAULT_AGENT
+    user_input: StreamInput, agent_id: str = DEFAULT_AGENT, prepared: tuple | None = None
 ) -> AsyncGenerator[str, None]:
     """
     Generate a stream of messages from the agent.
@@ -249,7 +288,7 @@ async def message_generator(
     This is the workhorse method for the /stream endpoint.
     """
     agent: AgentGraph = get_agent(agent_id)
-    kwargs, run_id = await _handle_input(user_input, agent, agent_id)
+    kwargs, run_id = prepared or await _handle_input(user_input, agent, agent_id)
 
     try:
         # Process streamed events from the graph and yield messages over the SSE stream.
@@ -381,7 +420,9 @@ def _sse_response_example() -> dict[int | str, Any]:
     operation_id="stream_with_agent_id",
 )
 @router.post("/stream", response_class=StreamingResponse, responses=_sse_response_example())
-async def stream(user_input: StreamInput, agent_id: str = DEFAULT_AGENT) -> StreamingResponse:
+async def stream(
+    user_input: StreamInput, request: Request, agent_id: str = DEFAULT_AGENT
+) -> StreamingResponse:
     """
     Stream an agent's response to a user input, including intermediate messages and tokens.
 
@@ -392,14 +433,17 @@ async def stream(user_input: StreamInput, agent_id: str = DEFAULT_AGENT) -> Stre
 
     Set `stream_tokens=false` to return intermediate messages but not token-by-token.
     """
+    prepared = None
+    if getattr(request.state, "user", None) is not None:
+        prepared = await _handle_input(user_input, get_agent(agent_id), agent_id, request)
     return StreamingResponse(
-        message_generator(user_input, agent_id),
+        message_generator(user_input, agent_id, prepared),
         media_type="text/event-stream",
     )
 
 
 @router.post("/feedback")
-async def feedback(feedback: Feedback) -> FeedbackResponse:
+async def feedback(feedback: Feedback, request: Request) -> FeedbackResponse:
     """
     Record feedback for a run to LangSmith.
 
@@ -407,6 +451,7 @@ async def feedback(feedback: Feedback) -> FeedbackResponse:
     credentials can be stored and managed in the service rather than the client.
     See: https://api.smith.langchain.com/redoc#tag/feedback/operation/create_feedback_api_v1_feedback_post
     """
+    await authorize_feedback(request, feedback.run_id)
     client = LangsmithClient()
     kwargs = feedback.kwargs or {}
     client.create_feedback(
@@ -420,13 +465,16 @@ async def feedback(feedback: Feedback) -> FeedbackResponse:
 
 @router.post("/{agent_id}/history", operation_id="history_with_agent_id")
 @router.post("/history")
-async def history(input: ChatHistoryInput, agent_id: str = DEFAULT_AGENT) -> ChatHistory:
+async def history(
+    input: ChatHistoryInput, request: Request, agent_id: str = DEFAULT_AGENT
+) -> ChatHistory:
     """
     Get chat history for a thread and agent.
 
     If agent_id is not provided, the default agent will be used.
     """
     agent: AgentGraph = get_agent(agent_id)
+    await authorize_thread(request, agent, agent_id, input.thread_id)
     config = RunnableConfig(configurable={"thread_id": input.thread_id})
     try:
         messages: list[BaseMessage] = []
@@ -450,17 +498,24 @@ async def history(input: ChatHistoryInput, agent_id: str = DEFAULT_AGENT) -> Cha
 @router.get("/{agent_id}/threads", operation_id="threads_with_agent_id")
 @router.get("/threads")
 async def threads(
-    input: UserThreadsInput = Depends(), agent_id: str = DEFAULT_AGENT
+    request: Request, input: UserThreadsInput = Depends(), agent_id: str = DEFAULT_AGENT
 ) -> UserThreads:
     """
     List a user's conversation threads for an agent, most recently updated first.
 
-    `user_id` is asserted by the caller and not checked against the credentials on the
-    request, so any holder of the bearer token can list any user's threads - the same
-    trust model as /history. Put your own authorization in front of this before end
-    users can reach it.
+    In account mode, user_id is derived from the authenticated account. Legacy mode
+    still trusts the caller's user_id and requires a trusted API client.
     """
     agent: AgentGraph = get_agent(agent_id)
+    user = getattr(request.state, "user", None)
+    if user is not None:
+        if input.user_id is not None and input.user_id != user.id:
+            raise HTTPException(
+                status_code=403, detail="user_id does not match the signed-in account"
+            )
+        input.user_id = user.id
+    if input.user_id is None:
+        raise HTTPException(status_code=422, detail="user_id is required in legacy mode")
     checkpointer = getattr(agent, "checkpointer", None)
     if not checkpointer:
         return UserThreads(threads=[])

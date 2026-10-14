@@ -24,6 +24,7 @@ from langfuse.langchain import CallbackHandler  # type: ignore[import-untyped]
 
 from agents import DEFAULT_AGENT, AgentGraph, get_agent
 from core import settings
+from service.account_auth import authorize_thread
 from service.utils import ensure_model_available
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,16 @@ async def agui_run(
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
 
     config = _base_config(input_data, agent_id)
+    user = getattr(request.state, "user", None)
+    if user is not None:
+        supplied = (input_data.forwarded_props or {}).get("configurable", {}).get("user_id")
+        if supplied is not None and supplied != user.id:
+            raise HTTPException(
+                status_code=403, detail="user_id does not match the signed-in account"
+            )
+        config["configurable"]["user_id"] = user.id
+        config["metadata"]["user_id"] = user.id
+        await authorize_thread(request, graph, agent_id, input_data.thread_id, create=True)
     encoder = EventEncoder(accept=request.headers.get("accept", ""))
     return StreamingResponse(
         _event_stream(agent_id, graph, input_data, config, encoder),

@@ -1,14 +1,22 @@
 from unittest.mock import patch
 
 import pytest
+import streamlit.config
 
 from schema import AgentInfo, ServiceMetadata
 from schema.models import OpenAIModelName
 
 
+@pytest.fixture(scope="session", autouse=True)
+def initialize_streamlit_config():
+    # Resolve Windows profile paths before mock_env clears the process environment.
+    streamlit.config.get_config_options()
+
+
 @pytest.fixture
-def mock_agent_client(mock_env):
+def mock_agent_client(mock_env, monkeypatch):
     """Fixture for creating a mock AgentClient with a clean environment."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "false")
 
     mock_info = ServiceMetadata(
         default_agent="test-agent",

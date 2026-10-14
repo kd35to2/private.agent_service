@@ -55,12 +55,16 @@ def get_or_create_user_id() -> str:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_user_threads_cached(
-    base_url: str, user_id: str, agent_id: str | None = None, limit: int = 20
+    base_url: str,
+    user_id: str,
+    agent_id: str | None = None,
+    limit: int = 20,
+    _access_token: str | None = None,
 ) -> UserThreads:
     """
     Fetch and cache user threads using the new synchronous get_user_threads method.
     """
-    client = AgentClient(base_url=base_url, get_info=False)
+    client = AgentClient(base_url=base_url, get_info=False, access_token=_access_token)
     return client.get_user_threads(user_id=user_id, agent=agent_id, limit=limit)
 
 
@@ -88,8 +92,37 @@ async def main() -> None:
         await asyncio.sleep(0.1)
         st.rerun()
 
-    # Get or create user ID
-    user_id = get_or_create_user_id()
+    load_dotenv()
+    account_mode = os.getenv("USER_AUTH_ENABLED", "false").lower() == "true"
+    agent_url = (
+        os.getenv("AGENT_URL")
+        or f"http://{os.getenv('HOST', '127.0.0.1')}:{os.getenv('PORT', '8080')}"
+    )
+    account_url = os.getenv("PUBLIC_AGENT_URL", agent_url).rstrip("/") + "/account"
+    if account_mode:
+        token = st.context.cookies.get("agent_session")
+        if not token:
+            st.title("登录后开始聊天")
+            st.link_button("登录 / 注册", account_url)
+            st.caption("账号页面登录后，点击“进入聊天”。")
+            st.stop()
+        auth_client = AgentClient(base_url=agent_url, get_info=False, access_token=token)
+        try:
+            account = auth_client.get_current_user()
+        except AgentClientError:
+            st.warning("登录已过期或已退出，请重新登录。")
+            st.link_button("登录 / 注册", account_url)
+            st.stop()
+        user_id = account["id"]
+        if st.session_state.get("account_id") != user_id:
+            st.session_state.clear()
+            st.session_state.account_id = user_id
+        st.query_params.pop("user_id", None)
+        st.sidebar.caption(f"已登录：{account['username']}")
+        st.sidebar.link_button("账号管理 / 修改密码 / 退出", account_url)
+    else:
+        token = None
+        user_id = get_or_create_user_id()
 
     if "agent_client" not in st.session_state:
         load_dotenv()
@@ -100,12 +133,19 @@ async def main() -> None:
             agent_url = f"http://{host}:{port}"
         try:
             with st.spinner("Connecting to agent service..."):
-                st.session_state.agent_client = AgentClient(base_url=agent_url)
+                if account_mode:
+                    st.session_state.agent_client = AgentClient(
+                        base_url=agent_url, access_token=token
+                    )
+                else:
+                    st.session_state.agent_client = AgentClient(base_url=agent_url)
         except AgentClientError as e:
             st.error(f"Error connecting to agent service at {agent_url}: {e}")
             st.markdown("The service might be booting up. Try again in a few seconds.")
             st.stop()
     agent_client: AgentClient = st.session_state.agent_client
+    if account_mode:
+        agent_client.access_token = token
 
     # Initialize voice manager (once per session)
     if "voice_manager" not in st.session_state:
@@ -162,6 +202,7 @@ async def main() -> None:
                     user_id=user_id,
                     agent_id=agent_client.agent,
                     limit=20,
+                    _access_token=token,
                 )
                 thread_list = user_threads.threads
             except Exception as e:
@@ -248,12 +289,16 @@ async def main() -> None:
                 {
                     "thread_id": st.session_state.thread_id,
                     "agent": agent_client.agent,
-                    USER_ID_COOKIE: user_id,
+                    **({} if account_mode else {USER_ID_COOKIE: user_id}),
                 }
             )
             chat_url = f"{st.context.url}?{query}"
             st.markdown(f"**Chat URL:**\n```text\n{chat_url}\n```")
-            st.info("Copy the above URL to share or revisit this chat")
+            st.info(
+                "登录原账号后可恢复此会话。"
+                if account_mode
+                else "Copy the above URL to share or revisit this chat"
+            )
 
         if st.button(":material/upload: Share/resume chat", use_container_width=True):
             share_chat_dialog()

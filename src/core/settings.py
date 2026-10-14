@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     LOG_LEVEL: LogLevel = LogLevel.WARNING
 
     AUTH_SECRET: SecretStr | None = None
+    USER_AUTH_ENABLED: bool = False
+    AUTH_SESSION_DAYS: int = Field(default=7, ge=1, le=30)
+    AUTH_COOKIE_SECURE: bool = False
+    APP_URL: str = "http://127.0.0.1:8502"
 
     OPENAI_API_KEY: SecretStr | None = None
     DEEPSEEK_API_KEY: SecretStr | None = None

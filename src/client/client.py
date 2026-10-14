@@ -31,6 +31,7 @@ class AgentClient:
         agent: str | None = None,
         timeout: float | None = None,
         get_info: bool = True,
+        access_token: str | None = None,
     ) -> None:
         """
         Initialize the client.
@@ -44,6 +45,7 @@ class AgentClient:
         """
         self.base_url = base_url
         self.auth_secret = os.getenv("AUTH_SECRET")
+        self.access_token = access_token
         self.timeout = timeout
         self.info: ServiceMetadata | None = None
         self.agent: str | None = None
@@ -55,9 +57,21 @@ class AgentClient:
     @property
     def _headers(self) -> dict[str, str]:
         headers = {}
-        if self.auth_secret:
+        if self.access_token:
+            headers["Authorization"] = f"Bearer {self.access_token}"
+        elif self.auth_secret:
             headers["Authorization"] = f"Bearer {self.auth_secret}"
         return headers
+
+    def get_current_user(self) -> dict[str, Any]:
+        try:
+            response = httpx.get(
+                f"{self.base_url}/auth/me", headers=self._headers, timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise AgentClientError("Please sign in again") from e
 
     def retrieve_info(self) -> None:
         try:
