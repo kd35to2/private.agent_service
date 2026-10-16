@@ -29,7 +29,7 @@ Docker 负责运行 PostgreSQL，Python 通过数据库驱动访问映射出来�
 - `src/service/account_auth.py`：注册、登录、改密、凭证验证、会话权限。
 - `src/service/account_page.py`：浏览器账号页面。
 - `src/service/service.py`：把认证身份绑定到 Agent 配置。
-- `src/agents/user_memory.py`：用固定用户 UUID 保存和读取长期记忆。
+- `src/rag/documents.py`：用登录账号 UUID 隔离知识库；账号 UUID 由后端确认。
 
 当前首次启动使用 `create_all()` 创建缺少的账号表；它不会升级已有表结构。以后修改表字段
 时，需要编写数据库迁移，例如引入 Alembic。这里不会修改或清空原有 LangGraph 表。

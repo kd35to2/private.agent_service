@@ -2,15 +2,27 @@ from unittest.mock import patch
 
 import pytest
 from langchain_core.messages import AIMessage, ToolCall, ToolMessage
+from langchain_core.messages import ChatMessage as LCChatMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.types import StreamWriter
 
 from agents.agents import Agent
-from agents.utils import CustomData
 from client import AgentClient
 from schema.schema import ChatMessage
 from service.utils import langchain_to_chat_message
+
+
+class CustomData:
+    def __init__(self, data, **kwargs):
+        self.data = data
+
+    def to_langchain(self):
+        return LCChatMessage(content=[self.data], role="custom")
+
+    def dispatch(self, writer):
+        writer(self.to_langchain())
+
 
 START_MESSAGE = CustomData(type="start", data={"key1": "value1", "key2": 123})
 

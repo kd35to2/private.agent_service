@@ -16,10 +16,32 @@ from schema import (
     UserThreads,
     UserThreadsInput,
 )
+from schema.errors import PUBLIC_ERROR_MESSAGES
 
 
 class AgentClientError(Exception):
-    pass
+    def __init__(self, message: str, *, code: str | None = None):
+        self.code = code
+        super().__init__(message)
+
+
+def public_http_error(error: httpx.HTTPError) -> AgentClientError:
+    code = "NETWORK_ERROR"
+    if isinstance(error, httpx.HTTPStatusError):
+        code = {
+            401: "SESSION_EXPIRED",
+            403: "PERMISSION_DENIED",
+            404: "PERMISSION_DENIED",
+            400: "INVALID_REQUEST",
+            422: "INVALID_REQUEST",
+        }.get(error.response.status_code, "SERVICE_UNAVAILABLE")
+        try:
+            detail = error.response.json().get("detail")
+            if isinstance(detail, dict) and detail.get("code") in PUBLIC_ERROR_MESSAGES:
+                code = detail["code"]
+        except (ValueError, AttributeError):
+            pass
+    return AgentClientError(PUBLIC_ERROR_MESSAGES[code], code=code)
 
 
 class AgentClient:
@@ -82,7 +104,7 @@ class AgentClient:
             )
             response.raise_for_status()
         except httpx.HTTPError as e:
-            raise AgentClientError(f"Error getting service info: {e}")
+            raise public_http_error(e) from e
 
         self.info = ServiceMetadata.model_validate(response.json())
         if not self.agent or self.agent not in [a.key for a in self.info.agents]:
@@ -141,7 +163,7 @@ class AgentClient:
                 )
                 response.raise_for_status()
             except httpx.HTTPError as e:
-                raise AgentClientError(f"Error: {e}")
+                raise public_http_error(e) from e
 
         return ChatMessage.model_validate(response.json())
 
@@ -186,7 +208,7 @@ class AgentClient:
             )
             response.raise_for_status()
         except httpx.HTTPError as e:
-            raise AgentClientError(f"Error: {e}")
+            raise public_http_error(e) from e
 
         return ChatMessage.model_validate(response.json())
 
@@ -199,20 +221,26 @@ class AgentClient:
             try:
                 parsed = json.loads(data)
             except Exception as e:
-                raise Exception(f"Error JSON parsing message from server: {e}")
+                raise AgentClientError(
+                    PUBLIC_ERROR_MESSAGES["INVALID_RESPONSE"], code="INVALID_RESPONSE"
+                ) from e
             match parsed["type"]:
                 case "message":
                     # Convert the JSON formatted message to an AnyMessage
                     try:
                         return ChatMessage.model_validate(parsed["content"])
                     except Exception as e:
-                        raise Exception(f"Server returned invalid message: {e}")
+                        raise AgentClientError(
+                            PUBLIC_ERROR_MESSAGES["INVALID_RESPONSE"], code="INVALID_RESPONSE"
+                        ) from e
                 case "token":
                     # Yield the str token directly
                     return parsed["content"]
                 case "error":
-                    error_msg = "Error: " + parsed["content"]
-                    return ChatMessage(type="ai", content=error_msg)
+                    code = parsed.get("code", "AGENT_EXECUTION_FAILED")
+                    if code not in PUBLIC_ERROR_MESSAGES:
+                        code = "AGENT_EXECUTION_FAILED"
+                    raise AgentClientError(PUBLIC_ERROR_MESSAGES[code], code=code)
         return None
 
     def stream(
@@ -270,7 +298,7 @@ class AgentClient:
                             break
                         yield parsed
         except httpx.HTTPError as e:
-            raise AgentClientError(f"Error: {e}")
+            raise public_http_error(e) from e
 
     async def astream(
         self,
@@ -330,7 +358,7 @@ class AgentClient:
                             if parsed != "":
                                 yield parsed
             except httpx.HTTPError as e:
-                raise AgentClientError(f"Error: {e}")
+                raise public_http_error(e) from e
 
     async def acreate_feedback(
         self, run_id: str, key: str, score: float, kwargs: dict[str, Any] = {}
@@ -354,7 +382,7 @@ class AgentClient:
                 response.raise_for_status()
                 response.json()
             except httpx.HTTPError as e:
-                raise AgentClientError(f"Error: {e}")
+                raise public_http_error(e) from e
 
     def get_history(self, thread_id: str, agent: str | None = None) -> ChatHistory:
         """
@@ -376,7 +404,7 @@ class AgentClient:
             )
             response.raise_for_status()
         except httpx.HTTPError as e:
-            raise AgentClientError(f"Error: {e}")
+            raise public_http_error(e) from e
 
         return ChatHistory.model_validate(response.json())
 
@@ -408,7 +436,7 @@ class AgentClient:
             )
             response.raise_for_status()
         except httpx.HTTPError as e:
-            raise AgentClientError(f"Error: {e}")
+            raise public_http_error(e) from e
 
         return UserThreads.model_validate(response.json())
 
@@ -434,6 +462,6 @@ class AgentClient:
                 )
                 response.raise_for_status()
             except httpx.HTTPError as e:
-                raise AgentClientError(f"Error: {e}")
+                raise public_http_error(e) from e
 
         return UserThreads.model_validate(response.json())

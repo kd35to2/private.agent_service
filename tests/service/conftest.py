@@ -36,7 +36,10 @@ def mock_agent():
     # Tests that exercise checkpointer reads set this explicitly; otherwise AsyncMock would
     # auto-create an attribute that looks like a working checkpointer.
     agent_mock.checkpointer = None
-    with patch("service.service.get_agent", Mock(return_value=agent_mock)):
+    with (
+        patch("service.service.get_agent", Mock(return_value=agent_mock)),
+        patch("service.service.ensure_rag_available", lambda: None),
+    ):
         yield agent_mock
 
 

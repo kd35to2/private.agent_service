@@ -79,7 +79,7 @@ def test_invoke(agent_client):
     with patch("httpx.post", return_value=error_response):
         with pytest.raises(AgentClientError) as exc:
             agent_client.invoke(QUESTION)
-        assert "500 Internal Server Error" in str(exc.value)
+        assert "服务暂时不可用" in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -118,7 +118,7 @@ async def test_ainvoke(agent_client):
     with patch("httpx.AsyncClient.post", return_value=error_response):
         with pytest.raises(AgentClientError) as exc:
             await agent_client.ainvoke(QUESTION)
-        assert "500 Internal Server Error" in str(exc.value)
+        assert "服务暂时不可用" in str(exc.value)
 
 
 def test_stream(agent_client):
@@ -169,7 +169,7 @@ def test_stream(agent_client):
     with patch("httpx.stream", return_value=error_response_mock):
         with pytest.raises(AgentClientError) as exc:
             list(agent_client.stream(QUESTION))
-        assert "500 Internal Server Error" in str(exc.value)
+        assert "服务暂时不可用" in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -235,7 +235,7 @@ async def test_astream(agent_client):
         with pytest.raises(AgentClientError) as exc:
             async for _ in agent_client.astream(QUESTION):
                 pass
-        assert "500 Internal Server Error" in str(exc.value)
+        assert "服务暂时不可用" in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -264,7 +264,7 @@ async def test_acreate_feedback(agent_client):
     with patch("httpx.AsyncClient.post", return_value=error_response):
         with pytest.raises(AgentClientError) as exc:
             await agent_client.acreate_feedback(RUN_ID, KEY, SCORE)
-        assert "500 Internal Server Error" in str(exc.value)
+        assert "服务暂时不可用" in str(exc.value)
 
 
 def test_get_history(agent_client):
@@ -300,7 +300,7 @@ def test_get_history(agent_client):
     with patch("httpx.post", return_value=error_response):
         with pytest.raises(AgentClientError) as exc:
             agent_client.get_history(THREAD_ID)
-        assert "500 Internal Server Error" in str(exc.value)
+        assert "服务暂时不可用" in str(exc.value)
 
 
 def test_info(agent_client):
@@ -410,8 +410,8 @@ def test_get_user_threads(agent_client):
     with patch("httpx.get", return_value=error_response):
         with pytest.raises(AgentClientError) as exc:
             agent_client.get_user_threads(USER_ID)
-        assert "Error:" in str(exc.value)
-        assert "500 Internal Server Error" in str(exc.value)
+        assert "http://test" not in str(exc.value)
+        assert "服务暂时不可用" in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -449,4 +449,4 @@ async def test_aget_user_threads(agent_client):
     with patch("httpx.AsyncClient.get", return_value=error_response):
         with pytest.raises(AgentClientError) as exc:
             await agent_client.aget_user_threads(USER_ID)
-        assert "500 Internal Server Error" in str(exc.value)
+        assert "服务暂时不可用" in str(exc.value)

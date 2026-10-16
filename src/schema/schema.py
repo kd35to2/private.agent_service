@@ -12,7 +12,7 @@ class AgentInfo(BaseModel):
 
     key: str = Field(
         description="Agent key.",
-        examples=["research-assistant"],
+        examples=["rag-assistant"],
     )
     description: str = Field(
         description="Description of the agent.",
@@ -31,7 +31,7 @@ class ServiceMetadata(BaseModel):
     )
     default_agent: str = Field(
         description="Default agent used when none is specified.",
-        examples=["research-assistant"],
+        examples=["rag-assistant"],
     )
     default_model: AllModelEnum = Field(
         description="Default model used when none is specified.",
@@ -201,7 +201,7 @@ class ThreadSummary(BaseModel):
     )
     agent_id: str = Field(
         description="Agent this thread was run with.",
-        examples=["research-assistant"],
+        examples=["rag-assistant"],
     )
     updated_at: datetime | None = Field(
         description="Timestamp of the most recent checkpoint in this thread.",

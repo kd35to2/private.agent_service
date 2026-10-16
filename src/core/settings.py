@@ -1,6 +1,6 @@
 from enum import StrEnum
 from json import loads
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from dotenv import find_dotenv
 from pydantic import (
@@ -85,6 +85,25 @@ class Settings(BaseSettings):
     APP_URL: str = "http://127.0.0.1:8502"
 
     OPENAI_API_KEY: SecretStr | None = None
+    # RAG embeddings are independent of the chat model provider.
+    DASHSCOPE_API_KEY: SecretStr | None = None
+    RAG_EMBEDDING_PROVIDER: Literal["openai", "dashscope"] = "openai"
+    RAG_EMBEDDING_MODEL: str | None = None
+    RAG_EMBEDDING_BASE_URL: str | None = None
+    RAG_CHROMA_PATH: str = "./chroma_db"
+    RAG_CHUNK_SIZE: int = Field(default=2000, ge=100, le=6000)
+    RAG_CHUNK_OVERLAP: int = Field(default=500, ge=0, le=2000)
+    RAG_VECTOR_K: int = Field(default=20, ge=1, le=100)
+    RAG_KEYWORD_K: int = Field(default=20, ge=1, le=100)
+    RAG_TOP_K: int = Field(default=5, ge=1, le=20)
+    RAG_RERANK_ENABLED: bool = True
+    RAG_RERANK_MODEL: str = "qwen3-rerank"
+    RAG_RERANK_URL: str = (
+        "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+    )
+    RAG_RERANK_TIMEOUT: float = Field(default=30, gt=0, le=120)
+    RAG_MIN_RERANK_SCORE: float = Field(default=0.05, ge=0, le=1)
+    RAG_MAX_UPLOAD_MB: int = Field(default=25, ge=1, le=100)
     DEEPSEEK_API_KEY: SecretStr | None = None
     ANTHROPIC_API_KEY: SecretStr | None = None
     GOOGLE_API_KEY: SecretStr | None = None

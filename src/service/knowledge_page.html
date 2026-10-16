@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>个人知识库</title>
+<style>
+:root{color-scheme:light dark;font-family:system-ui,sans-serif}body{margin:0;background:light-dark(#f5f7fb,#14181e);color:light-dark(#182333,#e8edf5)}
+main{max-width:1100px;margin:auto;padding:28px 18px}header{display:flex;gap:20px;align-items:center;flex-wrap:wrap}header h1{margin-right:auto}a{color:light-dark(#2158b3,#8ab5ff)}
+section{background:light-dark(#fff,#20262e);padding:22px;border-radius:12px;margin:20px 0}form,.actions{display:flex;align-items:end;flex-wrap:wrap;gap:12px}label{display:grid;gap:7px}
+input,select,button{font:inherit;padding:10px;max-width:100%;box-sizing:border-box}button{cursor:pointer;border:1px solid light-dark(#bac6d8,#59677a);border-radius:6px;background:light-dark(#f7f9fd,#303b4a);color:inherit}button:disabled{opacity:.5;cursor:wait}
+button.primary{background:#245bcc;color:white;border-color:#245bcc}input[type=text]{min-width:260px;flex:1}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:12px 8px;border-bottom:1px solid light-dark(#e1e7f0,#414a55);overflow-wrap:anywhere}
+.table-wrap{overflow:auto}pre{font:inherit;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}.muted{color:light-dark(#53647a,#b3bfd0)}#notice{white-space:pre-wrap;min-height:24px}details{margin:14px 0}summary{cursor:pointer}h2{margin-top:0}[hidden]{display:none!important}#search-results article{border-top:1px solid light-dark(#d9e1ed,#414a55);margin-top:18px;padding-top:16px}@media(max-width:600px){section{padding:16px}input[type=text]{min-width:0;width:100%}}
+</style></head><body><main>
+<header><h1>个人知识库</h1><span id="identity"></span><a href="/account">账号 / 返回聊天</a></header>
+<p>这里的文档仅对当前账号可见。PDF 可显示页码，DOCX 显示片段号与提取文本中的字符位置。</p>
+<p id="notice" role="status" aria-live="polite"></p>
+<div id="workspace" hidden>
+<section><h2>上传与更新</h2><form id="upload-form">
+<label>操作<select id="upload-target"><option value="">上传新文档</option></select></label>
+<label>文件<input id="upload-file" type="file" accept=".pdf,.docx,.txt,.md" required></label>
+<button class="primary">处理并建立索引</button></form>
+<p class="muted">相同内容重复上传会跳过。更新成功后切换版本；失败时保留旧版本。重建索引会重新调用嵌入模型。</p></section>
+<section><div class="actions"><h2>我的文档</h2><button type="button" id="refresh">刷新列表</button></div>
+<div class="table-wrap"><table><thead><tr><th>文档</th><th>状态 / 当前版本</th><th>片段</th><th>操作</th></tr></thead><tbody id="documents"></tbody></table></div></section>
+<section id="chunk-section" hidden><h2 id="chunk-title">切分片段</h2><div class="actions"><button id="previous" type="button">上一页</button><span id="page-label"></span><button id="next" type="button">下一页</button></div><div id="chunks"></div></section>
+<section><h2>检索验证</h2><form id="search-form"><input aria-label="检索问题" id="query" type="text" placeholder="输入问题、项目编号或产品型号" required maxlength="2000"><button class="primary">混合检索与重排</button></form><div id="search-results" aria-live="polite"></div></section>
+</div>
+<script>
+const byId=id=>document.getElementById(id);
+let documents=[], selected=null, offset=0, busy=false;
+const statusNames={ready:'就绪',processing:'处理中',failed:'最近处理失败（旧版本如有则仍可用）'};
+function text(tag,value){const el=document.createElement(tag);el.textContent=value;return el;}
+async function request(url,options={}){
+  const response=await fetch(url,{credentials:'same-origin',...options});
+  if(response.status===401){byId('workspace').hidden=true;throw new Error('请先通过右上角账号页面登录，再刷新本页。');}
+  if(!response.ok){let body={};try{body=await response.json();}catch{}const detail=body.detail;
+    throw new Error(typeof detail==='object'&&detail?.message?detail.message:'操作未完成，请检查文件或稍后重试。');}
+  return response.status===204?null:response.json();
+}
+async function act(action){if(busy)return;busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);byId('notice').textContent='正在处理，请稍候……';
+  try{await action();}catch(e){byId('notice').textContent=e.message||'服务暂时不可用。';}
+  finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
+function button(label,fn){const b=text('button',label);b.type='button';b.addEventListener('click',()=>act(fn));return b;}
+async function loadDocuments(){
+  documents=(await request('/knowledge/documents')).documents;
+  const tbody=byId('documents');tbody.replaceChildren();
+  const target=byId('upload-target'), keep=target.value;target.replaceChildren();const first=text('option','上传新文档');first.value='';target.append(first);
+  for(const doc of documents){
+    const option=text('option','更新：'+doc.name);option.value=doc.id;target.append(option);
+    const row=document.createElement('tr');row.append(text('td',doc.name),text('td',`${statusNames[doc.status]||doc.status} / v${doc.version??'—'}`),text('td',String(doc.chunk_count)));
+    const actions=document.createElement('td');actions.append(button('查看片段',async()=>{selected=doc;offset=0;await loadChunks();byId('notice').textContent='已读取片段。';}),button('重新索引',async()=>{await request(`/knowledge/documents/${doc.id}/reindex`,{method:'POST'});await loadDocuments();byId('notice').textContent='重新索引成功。';}),button('删除',async()=>{if(!confirm(`删除文档“${doc.name}”？删除后立即停止检索该文档。`)){byId('notice').textContent='已取消。';return;}await request(`/knowledge/documents/${doc.id}`,{method:'DELETE'});if(selected?.id===doc.id){selected=null;byId('chunk-section').hidden=true;}await loadDocuments();byId('search-results').replaceChildren();byId('notice').textContent='文档已从知识库删除。';}));row.append(actions);tbody.append(row);
+    const history=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;const detail=document.createElement('details');detail.append(text('summary','版本记录'));for(const version of doc.versions){detail.append(text('p',`v${version.number} · ${statusNames[version.status]||version.status}${version.error?' · '+version.error:''}`));}cell.append(detail);history.append(cell);tbody.append(history);
+  }
+  if(!documents.length){const row=document.createElement('tr'),cell=text('td','还没有文档，请先上传。');cell.colSpan=4;row.append(cell);tbody.append(row);}
+  if(documents.some(d=>d.id===keep))target.value=keep;
+  if(selected){const previousVersion=selected.version;selected=documents.find(d=>d.id===selected.id)||null;if(selected){if(selected.version!==previousVersion)offset=0;await loadChunks();}else{byId('chunk-section').hidden=true;}}
+}
+async function loadChunks(){
+  if(!selected)return;const result=await request(`/knowledge/documents/${selected.id}/chunks?offset=${offset}&limit=20`);
+  byId('chunk-section').hidden=false;byId('chunk-title').textContent=result.name+' · 切分片段';byId('page-label').textContent=`第 ${Math.floor(offset/20)+1} 页`;
+  const container=byId('chunks');container.replaceChildren();for(const chunk of result.chunks){const details=document.createElement('details');details.append(text('summary',`片段 ${chunk.index} · ${chunk.characters} 字符${chunk.page?' · 第 '+chunk.page+' 页':''} · 起始字符 ${chunk.start_index<0?'未记录':chunk.start_index}`),text('pre',chunk.text));container.append(details);}
+}
+byId('upload-form').addEventListener('submit',event=>{event.preventDefault();act(async()=>{const file=byId('upload-file').files[0];if(!file)throw new Error('请选择文件。');const body=new FormData();body.append('file',file);if(byId('upload-target').value)body.append('document_id',byId('upload-target').value);const result=await request('/knowledge/documents',{method:'POST',body});await loadDocuments();byId('notice').textContent=result.duplicate?'内容已存在，未重复调用嵌入模型。':`处理完成，新增 ${result.chunk_count} 个片段。`;});});
+byId('refresh').addEventListener('click',()=>act(async()=>{await loadDocuments();byId('notice').textContent='列表已刷新。';}));
+byId('previous').addEventListener('click',()=>act(async()=>{offset=Math.max(0,offset-20);await loadChunks();byId('notice').textContent='';}));
+byId('next').addEventListener('click',()=>act(async()=>{if(selected&&offset+20<selected.chunk_count)offset+=20;await loadChunks();byId('notice').textContent='';}));
+byId('search-form').addEventListener('submit',event=>{event.preventDefault();act(async()=>{const result=await request('/knowledge/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:byId('query').value})});const output=byId('search-results');output.replaceChildren();for(const evidence of result.results){const article=document.createElement('article');article.append(text('h3',`[${evidence.citation}] ${evidence.document_name} · v${evidence.version} · 片段 ${evidence.chunk_index}${evidence.page?' · 第 '+evidence.page+' 页':''}`),text('p',`融合分数 ${evidence.fusion_score.toFixed(5)} · 重排分数 ${evidence.rerank_score===null?'未启用或已降级':evidence.rerank_score.toFixed(5)}`),text('pre',evidence.text));output.append(article);}byId('notice').textContent=result.notices.join('\n')||(!result.results.length?'未找到足够相关资料。':'检索完成。');});});
+act(async()=>{const me=await request('/auth/me');byId('identity').textContent=me.username;byId('workspace').hidden=false;await loadDocuments();byId('notice').textContent='';});
+</script></main></body></html>

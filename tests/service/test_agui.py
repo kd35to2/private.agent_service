@@ -133,7 +133,10 @@ def test_agui_no_raw_events(mock_agui_agent, test_client) -> None:
 
 def test_agui_default_agent_route(mock_agui_agent, test_client) -> None:
     """POST /agui/run falls back to the default agent."""
-    with patch("service.agui.get_agent", return_value=model_agent) as mock_get_agent:
+    with (
+        patch("service.agui.ensure_rag_available", lambda: None),
+        patch("service.agui.get_agent", return_value=model_agent) as mock_get_agent,
+    ):
         events = collect_events(test_client, "/agui/run", run_input())
     from agents import DEFAULT_AGENT
 

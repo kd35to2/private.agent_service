@@ -41,7 +41,7 @@ class FakeCheckpointer:
         self,
         thread_id: str,
         user_id: str = "user-123",
-        agent_id: str = "research-assistant",
+        agent_id: str = "rag-assistant",
         turns: int = 1,
         title: str = "Hello",
         subgraph_heads: int = 0,

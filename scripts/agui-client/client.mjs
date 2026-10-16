@@ -15,7 +15,7 @@ import { randomUUID } from "crypto";
 import { HttpAgent } from "@ag-ui/client";
 
 const message = process.argv[2] ?? "Tell me a joke!";
-const agentId = process.argv[3] ?? "chatbot";
+const agentId = process.argv[3] ?? "rag-assistant";
 const baseUrl = process.env.AGENT_URL ?? "http://localhost:8080";
 const threadId = process.env.THREAD_ID ?? randomUUID();
 

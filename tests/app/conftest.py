@@ -19,10 +19,9 @@ def mock_agent_client(mock_env, monkeypatch):
     monkeypatch.setenv("USER_AUTH_ENABLED", "false")
 
     mock_info = ServiceMetadata(
-        default_agent="test-agent",
+        default_agent="rag-assistant",
         agents=[
-            AgentInfo(key="test-agent", description="Test agent"),
-            AgentInfo(key="chatbot", description="Chatbot"),
+            AgentInfo(key="rag-assistant", description="Test agent"),
         ],
         default_model=OpenAIModelName.GPT_5_NANO,
         models=[OpenAIModelName.GPT_5_NANO, OpenAIModelName.GPT_5_MINI],
@@ -35,5 +34,5 @@ def mock_agent_client(mock_env, monkeypatch):
         mock_agent_client_instance = mock_agent_client.return_value
         mock_agent_client_instance.info = mock_info
         # Give the mock a deterministic selected agent.
-        mock_agent_client_instance.agent = "test-agent"
+        mock_agent_client_instance.agent = "rag-assistant"
         yield mock_agent_client_instance

@@ -30,7 +30,7 @@ this service server-side using the AG-UI `HttpAgent`:
 import { HttpAgent } from "@ag-ui/client";
 
 const agent = new HttpAgent({
-  url: "http://your-service:8080/agui/research-assistant/run",
+  url: "http://your-service:8080/agui/rag-assistant/run",
   headers: { Authorization: `Bearer ${process.env.AUTH_SECRET}` },
 });
 ```
@@ -51,13 +51,13 @@ python src/run_service.py
 # in another shell
 cd scripts/agui-client
 npm install
-node client.mjs "Tell me a joke!" chatbot
+node client.mjs "Tell me a joke!" rag-assistant
 ```
 
 Use `THREAD_ID` to continue a conversation, and `AUTH_SECRET` / `AGENT_URL` as needed:
 
 ```sh
-THREAD_ID=my-thread node client.mjs "And another one" chatbot
+THREAD_ID=my-thread node client.mjs "And another one" rag-assistant
 ```
 
 ## Behavior notes

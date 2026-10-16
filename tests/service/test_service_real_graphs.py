@@ -16,13 +16,24 @@ import httpx
 import pytest
 import pytest_asyncio
 from langchain_core.messages import AIMessage
+from langchain_core.messages import ChatMessage as LCChatMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.types import StreamWriter, interrupt
 
-from agents.utils import CustomData
 from service import app
+
+
+class CustomData:
+    def __init__(self, data, **kwargs):
+        self.data = data
+
+    def to_langchain(self):
+        return LCChatMessage(content=[self.data], role="custom")
+
+    def dispatch(self, writer):
+        writer(self.to_langchain())
 
 
 async def greet(state: MessagesState) -> MessagesState:

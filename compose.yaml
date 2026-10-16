@@ -26,17 +26,21 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8080
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - RAG_CHROMA_PATH=/app/chroma_db
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/info"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 5s
       timeout: 5s
       retries: 5
     # Volume mount of development-only credentials since compose watch doesn't sync ignored files and doesn't do initial sync when the service starts
     volumes:
       - ./privatecredentials:/privatecredentials
+      - knowledge_data:/app/chroma_db
     develop:
       watch:
         - path: src/agents/
@@ -57,6 +61,9 @@ services:
         - path: src/memory/
           action: sync+restart
           target: /app/memory/
+        - path: src/rag/
+          action: sync+restart
+          target: /app/rag/
   streamlit_app:
     build:
       context: .
@@ -66,7 +73,7 @@ services:
     depends_on:
       - agent_service
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/healthz"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -88,3 +95,4 @@ services:
 
 volumes:
   postgres_data:
+  knowledge_data:

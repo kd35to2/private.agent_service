@@ -14,6 +14,7 @@ COPY src/agents/ ./agents/
 COPY src/accounts/ ./accounts/
 COPY src/core/ ./core/
 COPY src/memory/ ./memory/
+COPY src/rag/ ./rag/
 COPY src/schema/ ./schema/
 COPY src/service/ ./service/
 COPY src/run_service.py .

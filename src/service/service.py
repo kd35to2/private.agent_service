@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from langchain_core._api import LangChainBetaWarning
@@ -17,7 +17,6 @@ from langchain_core.messages import (
     AIMessageChunk,
     BaseMessage,
     HumanMessage,
-    ToolMessage,
 )
 from langchain_core.runnables import RunnableConfig
 from langfuse import Langfuse  # type: ignore[import-untyped]
@@ -30,8 +29,11 @@ from langsmith import uuid7
 
 from accounts.database import create_account_database
 from agents import DEFAULT_AGENT, AgentGraph, get_agent, get_all_agent_info, load_agent
+from agents.tools import ensure_rag_available
 from core import settings
 from memory import initialize_database, initialize_store
+from rag.documents import KnowledgeBase
+from rag.runtime import configure as configure_knowledge_base
 from schema import (
     ChatHistory,
     ChatHistoryInput,
@@ -44,6 +46,7 @@ from schema import (
     UserThreads,
     UserThreadsInput,
 )
+from schema.errors import PUBLIC_ERROR_MESSAGES, AgentServiceError
 from service.account_auth import (
     authorize_feedback,
     authorize_thread,
@@ -56,6 +59,7 @@ from service.account_auth import (
 )
 from service.account_page import router as account_page_router
 from service.agui import router as agui_router
+from service.knowledge_base import router as knowledge_base_router
 from service.threads import list_user_threads
 from service.utils import (
     convert_message_content_to_string,
@@ -112,6 +116,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 resources.push_async_callback(account_db.close)
                 await account_db.setup()
                 app.state.account_database = account_db
+                knowledge_base = KnowledgeBase(account_db)
+                await knowledge_base.recover()
+                app.state.knowledge_base = knowledge_base
+                configure_knowledge_base(knowledge_base)
+                resources.callback(configure_knowledge_base, None)
             # Set up both components
             if hasattr(saver, "setup"):  # ignore: union-attr
                 await saver.setup()
@@ -147,8 +156,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(lifespan=lifespan, generate_unique_id_function=custom_generate_unique_id)
+
+
+@app.exception_handler(AgentServiceError)
+async def agent_error_handler(request: Request, error: AgentServiceError) -> JSONResponse:
+    logger.error(
+        "Agent service error [%s]: %s",
+        error.code,
+        error.detail,
+        exc_info=(type(error), error, error.__traceback__),
+    )
+    return JSONResponse(status_code=error.status_code, content={"detail": error.public_payload()})
+
+
 app.include_router(account_router)
 app.include_router(account_page_router)
+app.include_router(knowledge_base_router)
 router = APIRouter(dependencies=[Depends(verify_bearer)])
 # AG-UI protocol endpoints inherit the same bearer auth - see service/agui.py
 router.include_router(agui_router)
@@ -178,6 +201,8 @@ async def _handle_input(
         if getattr(request.state, "user", None) is not None:
             assert user_input.thread_id is not None
             await authorize_thread(request, agent, agent_id, user_input.thread_id, create=True)
+    if agent_id == "rag-assistant":
+        ensure_rag_available()
     run_id = uuid7()
     if request is not None:
         await record_run(request, str(run_id))
@@ -248,11 +273,7 @@ async def invoke(
     is also attached to messages for recording feedback.
     Use user_id to persist and continue a conversation across multiple threads.
     """
-    # NOTE: Currently this only returns the last message or interrupt.
-    # In the case of an agent outputting multiple AIMessages (such as the background step
-    # in interrupt-agent, or a tool step in research-assistant), it's omitted. Arguably,
-    # you'd want to include it. You could update the API to return a list of ChatMessages
-    # in that case.
+    # The synchronous endpoint returns the final answer; /stream also includes retrieval events.
     agent: AgentGraph = get_agent(agent_id)
     kwargs, run_id = await _handle_input(user_input, agent, agent_id, request)
 
@@ -274,6 +295,8 @@ async def invoke(
 
         output.run_id = str(run_id)
         return output
+    except AgentServiceError:
+        raise
     except Exception as e:
         logger.error(f"An exception occurred: {e}")
         raise HTTPException(status_code=500, detail="Unexpected error")
@@ -317,18 +340,6 @@ async def message_generator(
                         continue
                     updates = updates or {}
                     update_messages = updates.get("messages", [])
-                    # special cases for using langgraph-supervisor library
-                    if "supervisor" in node or "sub-agent" in node:
-                        # the only tools that come from the actual agent are the handoff and handback tools
-                        if isinstance(update_messages[-1], ToolMessage):
-                            if "sub-agent" in node and len(update_messages) > 1:
-                                # If this is a sub-agent, we want to keep the last 2 messages - the handback tool, and it's result
-                                update_messages = update_messages[-2:]
-                            else:
-                                # If this is a supervisor, we want to keep the last message only - the handoff result. The tool comes from the 'agent' node.
-                                update_messages = [update_messages[-1]]
-                        else:
-                            update_messages = []
                     new_messages.extend(update_messages)
 
             if stream_mode == "custom":
@@ -385,9 +396,12 @@ async def message_generator(
                     # that the model is asking for a tool to be invoked.
                     # So we only print non-empty content.
                     yield f"data: {json.dumps({'type': 'token', 'content': convert_message_content_to_string(content)})}\n\n"
+    except AgentServiceError as e:
+        logger.error("Agent stream error [%s]: %s", e.code, e.detail, exc_info=True)
+        yield f"data: {json.dumps({'type': 'error', **e.public_payload()})}\n\n"
     except Exception as e:
         logger.error(f"Error in message generator: {e}")
-        yield f"data: {json.dumps({'type': 'error', 'content': 'Internal server error'})}\n\n"
+        yield f"data: {json.dumps({'type': 'error', 'code': 'AGENT_EXECUTION_FAILED', 'message': PUBLIC_ERROR_MESSAGES['AGENT_EXECUTION_FAILED']})}\n\n"
     finally:
         yield "data: [DONE]\n\n"
 
@@ -433,6 +447,8 @@ async def stream(
 
     Set `stream_tokens=false` to return intermediate messages but not token-by-token.
     """
+    if agent_id == "rag-assistant":
+        ensure_rag_available()
     prepared = None
     if getattr(request.state, "user", None) is not None:
         prepared = await _handle_input(user_input, get_agent(agent_id), agent_id, request)

@@ -1,4 +1,6 @@
 import asyncio
+import json
+import logging
 import os
 import urllib.parse
 import uuid
@@ -6,11 +8,10 @@ from collections.abc import AsyncGenerator
 
 import streamlit as st
 from dotenv import load_dotenv
-from pydantic import ValidationError
 
 from client import AgentClient, AgentClientError
 from schema import ChatHistory, ChatMessage, UserThreads
-from schema.task_data import TaskData, TaskDataStatus
+from schema.errors import PUBLIC_ERROR_MESSAGES
 from voice import VoiceManager
 
 # A Streamlit app for interacting with the langgraph agent via a simple chat interface.
@@ -24,9 +25,10 @@ from voice import VoiceManager
 # The app heavily uses AgentClient to interact with the agent's FastAPI endpoints.
 
 
-APP_TITLE = "Agent Service Toolkit"
+APP_TITLE = "个人知识库"
 APP_ICON = "🧰"
 USER_ID_COOKIE = "user_id"
+logger = logging.getLogger(__name__)
 
 
 def get_or_create_user_id() -> str:
@@ -120,6 +122,7 @@ async def main() -> None:
         st.query_params.pop("user_id", None)
         st.sidebar.caption(f"已登录：{account['username']}")
         st.sidebar.link_button("账号管理 / 修改密码 / 退出", account_url)
+        st.sidebar.link_button("知识库管理 / 上传文档", agent_url.rstrip("/") + "/knowledge")
     else:
         token = None
         user_id = get_or_create_user_id()
@@ -140,7 +143,8 @@ async def main() -> None:
                 else:
                     st.session_state.agent_client = AgentClient(base_url=agent_url)
         except AgentClientError as e:
-            st.error(f"Error connecting to agent service at {agent_url}: {e}")
+            logger.warning("Agent service connection failed: %s", e)
+            st.error("暂时无法连接服务，请稍后重试。")
             st.markdown("The service might be booting up. Try again in a few seconds.")
             st.stop()
     agent_client: AgentClient = st.session_state.agent_client
@@ -160,7 +164,7 @@ async def main() -> None:
         else:
             # Read the agent from the URL so history is fetched through the graph that
             # created the thread.
-            resume_agent = st.query_params.get("agent") or agent_client.agent
+            resume_agent = "rag-assistant"
             try:
                 messages: ChatHistory = agent_client.get_history(
                     thread_id=thread_id, agent=resume_agent
@@ -179,7 +183,7 @@ async def main() -> None:
         st.header(f"{APP_ICON} {APP_TITLE}")
 
         ""
-        "Full toolkit for running an AI agent service built with LangGraph, FastAPI and Streamlit"
+        "上传自己的资料，检索原文，并获得带来源引用的回答。"
         ""
 
         if st.button(":material/chat: New Chat", use_container_width=True):
@@ -205,8 +209,9 @@ async def main() -> None:
                     _access_token=token,
                 )
                 thread_list = user_threads.threads
-            except Exception as e:
-                st.caption(f"Couldn't load conversation history: {e}")
+            except Exception:
+                logger.exception("Conversation list loading failed")
+                st.caption("暂时无法加载历史会话，请稍后重试。")
                 thread_list = []
 
             for t in thread_list:
@@ -229,17 +234,8 @@ async def main() -> None:
         with st.popover(":material/settings: Settings", use_container_width=True):
             model_idx = agent_client.info.models.index(agent_client.info.default_model)
             model = st.selectbox("LLM to use", options=agent_client.info.models, index=model_idx)
-            agent_list = [a.key for a in agent_client.info.agents]
-            agent_idx = agent_list.index(agent_client.info.default_agent)
-            # Sync the selection to the ?agent= URL param (dropped when it's the default).
-            agent_client.agent = st.selectbox(
-                "Agent to use",
-                options=agent_list,
-                index=agent_idx,
-                key="agent",
-                bind="query-params",
-                on_change=fetch_user_threads_cached.clear,
-            )
+            agent_client.agent = "rag-assistant"
+            st.query_params.pop("agent", None)
             use_streaming = st.toggle("Stream results", value=True)
             # Audio toggle with callback: clears cached audio when toggled off
             enable_audio = st.toggle(
@@ -260,22 +256,9 @@ async def main() -> None:
             # Display user ID (for debugging or user information)
             st.text_input("User ID (read-only)", value=user_id, disabled=True)
 
-        @st.dialog("Architecture")
-        def architecture_dialog() -> None:
-            st.image(
-                "https://github.com/JoshuaC215/agent-service-toolkit/blob/main/media/agent_architecture.png?raw=true"
-            )
-            "[View full size on Github](https://github.com/JoshuaC215/agent-service-toolkit/blob/main/media/agent_architecture.png)"
-            st.caption(
-                "App hosted on [Streamlit Cloud](https://share.streamlit.io/) with FastAPI service running in [Azure](https://learn.microsoft.com/en-us/azure/app-service/)"
-            )
-
-        if st.button(":material/schema: Architecture", use_container_width=True):
-            architecture_dialog()
-
-        with st.popover(":material/policy: Privacy", use_container_width=True):
+        with st.expander("数据与隐私"):
             st.write(
-                "Prompts, responses and feedback in this app are anonymously recorded and saved to LangSmith for product evaluation and improvement purposes only."
+                "文档按登录账号隔离。嵌入、重排和回答会调用已配置的模型服务。仅在显式启用时记录外部追踪。"
             )
 
         @st.dialog("Share/resume chat")
@@ -303,30 +286,14 @@ async def main() -> None:
         if st.button(":material/upload: Share/resume chat", use_container_width=True):
             share_chat_dialog()
 
-        "[View the source code](https://github.com/JoshuaC215/agent-service-toolkit)"
-        st.caption(
-            "Made with :material/favorite: by [Joshua](https://www.linkedin.com/in/joshua-k-carroll/) in Oakland"
-        )
-
     # Draw existing messages
     messages: list[ChatMessage] = st.session_state.messages
 
     if len(messages) == 0:
-        match agent_client.agent:
-            case "chatbot":
-                WELCOME = "Hello! I'm a simple chatbot. Ask me anything!"
-            case "interrupt-agent":
-                WELCOME = "Hello! I'm an interrupt agent. Tell me your birthday and I will predict your personality!"
-            case "research-assistant":
-                WELCOME = "Hello! I'm an AI-powered research assistant with web search and a calculator. Ask me anything!"
-            case "rag-assistant":
-                WELCOME = """Hello! I'm an AI-powered Company Policy & HR assistant with access to AcmeTech's Employee Handbook.
-                I can help you find information about benefits, remote work, time-off policies, company values, and more. Ask me anything!"""
-            case _:
-                WELCOME = "Hello! I'm an AI agent. Ask me anything!"
-
         with st.chat_message("ai"):
-            st.write(WELCOME)
+            st.write(
+                "你好，我是你的知识库助手。请先在左侧“知识库管理”中上传资料；我会检索你的文档，并为回答提供原文引用。"
+            )
 
     # draw_messages() expects an async iterator over messages
     async def amessage_iter() -> AsyncGenerator[ChatMessage, None]:
@@ -402,7 +369,7 @@ async def main() -> None:
                 fetch_user_threads_cached.clear()
             st.rerun()  # Clear stale containers
         except AgentClientError as e:
-            st.error(f"Error generating response: {e}")
+            st.error(str(e))
             st.stop()
 
     # If messages have been generated, show feedback widget
@@ -440,9 +407,18 @@ async def draw_messages(
     # Placeholder for intermediate streaming tokens
     streaming_content = ""
     streaming_placeholder = None
+    pending_tools = {}
+
+    async def next_message():
+        try:
+            return await anext(messages_agen, None)
+        except Exception:
+            for tool_status in pending_tools.values():
+                tool_status.update(state="error", expanded=True)
+            raise
 
     # Iterate over the messages and draw them
-    while msg := await anext(messages_agen, None):
+    while msg := await next_message():
         # str message represents an intermediate token being streamed
         if isinstance(msg, str):
             # If placeholder is empty, this is the first token of a new message
@@ -458,9 +434,7 @@ async def draw_messages(
             streaming_placeholder.write(streaming_content)
             continue
         if not isinstance(msg, ChatMessage):
-            st.error(f"Unexpected message type: {type(msg)}")
-            st.write(msg)
-            st.stop()
+            raise AgentClientError(PUBLIC_ERROR_MESSAGES["INVALID_RESPONSE"])
 
         match msg.type:
             # A message from the user, the easiest case
@@ -491,83 +465,57 @@ async def draw_messages(
                         else:
                             st.write(msg.content)
 
+                    if msg.custom_data:
+                        for notice in msg.custom_data.get("notices", []):
+                            st.caption(notice)
+                        for citation in msg.custom_data.get("citations", []):
+                            location = (
+                                f"第 {citation['page']} 页"
+                                if citation.get("page")
+                                else f"片段 {citation['chunk_index']}"
+                            )
+                            label = f"[{citation['citation']}] {citation['document_name']} · v{citation['version']} · {location}"
+                            with st.expander(label):
+                                st.text(citation["text"])
+                                if citation["start_index"] >= 0:
+                                    st.caption(f"原文字符起始位置：{citation['start_index']}")
+
                     if msg.tool_calls:
                         # Create a status container for each tool call and store the
                         # status container by ID to ensure results are mapped to the
                         # correct status container.
-                        call_results = {}
                         for tool_call in msg.tool_calls:
-                            # Use different labels for transfer vs regular tool calls
-                            if "transfer_to" in tool_call["name"]:
-                                label = f"""💼 Sub Agent: {tool_call["name"]}"""
-                            else:
-                                label = f"""🛠️ Tool Call: {tool_call["name"]}"""
-
                             status = st.status(
-                                label,
-                                state="running" if is_new else "complete",
+                                "正在检索知识库", state="running" if is_new else "complete"
                             )
-                            call_results[tool_call["id"]] = status
+                            pending_tools[tool_call["id"]] = status
 
-                        # Expect one ToolMessage for each tool call.
-                        for tool_call in msg.tool_calls:
-                            if "transfer_to" in tool_call["name"]:
-                                status = call_results[tool_call["id"]]
-                                status.update(expanded=True)
-                                await handle_sub_agent_msgs(messages_agen, status, is_new)
-                                break
-
-                            # Only non-transfer tool calls reach this point
-                            status = call_results[tool_call["id"]]
-                            status.write("Input:")
-                            status.write(tool_call["args"])
-                            tool_result: ChatMessage = await anext(messages_agen)
-
-                            if tool_result.type != "tool":
-                                st.error(f"Unexpected ChatMessage type: {tool_result.type}")
-                                st.write(tool_result)
-                                st.stop()
-
-                            # Record the message if it's new, and update the correct
-                            # status container with the result
-                            if is_new:
-                                st.session_state.messages.append(tool_result)
-                            if tool_result.tool_call_id:
-                                status = call_results[tool_result.tool_call_id]
-                            status.write("Output:")
-                            status.write(tool_result.content)
-                            status.update(state="complete")
-
-            case "custom":
-                # CustomData example used by the bg-task-agent
-                # See:
-                # - src/agents/utils.py CustomData
-                # - src/agents/bg_task_agent/task.py
-                try:
-                    task_data: TaskData = TaskData.model_validate(msg.custom_data)
-                except ValidationError:
-                    st.error("Unexpected CustomData message received from agent")
-                    st.write(msg.custom_data)
-                    st.stop()
-
+            case "tool":
                 if is_new:
                     st.session_state.messages.append(msg)
+                tool_status = pending_tools.pop(msg.tool_call_id, None)
+                if tool_status is not None:
+                    try:
+                        result = json.loads(msg.content)
+                        tool_status.write(f"检索到 {len(result.get('results', []))} 个相关片段。")
+                    except (ValueError, AttributeError):
+                        tool_status.write("检索已结束。")
+                    tool_status.update(state="complete")
 
-                if last_message_type != "task":
-                    last_message_type = "task"
-                    st.session_state.last_message = st.chat_message(
-                        name="task", avatar=":material/manufacturing:"
-                    )
-                    with st.session_state.last_message:
-                        status = TaskDataStatus()
+            case "custom":
+                raise AgentClientError(PUBLIC_ERROR_MESSAGES["INVALID_RESPONSE"])
 
-                status.add_and_draw_task_data(task_data)
-
-            # In case of an unexpected message type, log an error and stop
             case _:
-                st.error(f"Unexpected ChatMessage type: {msg.type}")
-                st.write(msg)
-                st.stop()
+                raise AgentClientError(PUBLIC_ERROR_MESSAGES["INVALID_RESPONSE"])
+
+    if pending_tools:
+        for tool_status in pending_tools.values():
+            tool_status.update(state="error", expanded=True)
+        st.warning(
+            "工具执行中断，没有返回完整结果。请查看错误提示，检查知识库或工具配置后新建会话重试。"
+            if is_new
+            else "这段历史中有未完成的工具调用，未保存对应结果。修复配置后请新建会话重试。"
+        )
 
 
 async def handle_feedback() -> None:
@@ -593,98 +541,18 @@ async def handle_feedback() -> None:
                 score=normalized_score,
                 kwargs={"comment": "In-line human feedback"},
             )
-        except AgentClientError as e:
-            st.error(f"Error recording feedback: {e}")
+        except AgentClientError:
+            st.error("反馈未能提交，请稍后重试。")
             st.stop()
         st.session_state.last_feedback = (latest_run_id, feedback)
         st.toast("Feedback recorded", icon=":material/reviews:")
 
 
-async def handle_sub_agent_msgs(messages_agen, status, is_new):
-    """
-    This function segregates agent output into a status container.
-    It handles all messages after the initial tool call message
-    until it reaches the final AI message.
-
-    Enhanced to support nested multi-agent hierarchies with handoff back messages.
-
-    Args:
-        messages_agen: Async generator of messages
-        status: the status container for the current agent
-        is_new: Whether messages are new or replayed
-    """
-    nested_popovers = {}
-
-    # looking for the transfer Success tool call message
-    first_msg = await anext(messages_agen)
-    if is_new:
-        st.session_state.messages.append(first_msg)
-
-    # Continue reading until we get an explicit handoff back
-    while True:
-        # Read next message
-        sub_msg = await anext(messages_agen)
-
-        # this should only happen is skip_stream flag is removed
-        # if isinstance(sub_msg, str):
-        #     continue
-
-        if is_new:
-            st.session_state.messages.append(sub_msg)
-
-        # Handle tool results with nested popovers
-        if sub_msg.type == "tool" and sub_msg.tool_call_id in nested_popovers:
-            popover = nested_popovers[sub_msg.tool_call_id]
-            popover.write("**Output:**")
-            popover.write(sub_msg.content)
-            continue
-
-        # Handle transfer_back_to tool calls - these indicate a sub-agent is returning control
-        if (
-            hasattr(sub_msg, "tool_calls")
-            and sub_msg.tool_calls
-            and any("transfer_back_to" in tc.get("name", "") for tc in sub_msg.tool_calls)
-        ):
-            # Process transfer_back_to tool calls
-            for tc in sub_msg.tool_calls:
-                if "transfer_back_to" in tc.get("name", ""):
-                    # Read the corresponding tool result
-                    transfer_result = await anext(messages_agen)
-                    if is_new:
-                        st.session_state.messages.append(transfer_result)
-
-            # After processing transfer back, we're done with this agent
-            if status:
-                status.update(state="complete")
-            break
-
-        # Display content and tool calls in the same nested status
-        if status:
-            if sub_msg.content:
-                status.write(sub_msg.content)
-
-            if hasattr(sub_msg, "tool_calls") and sub_msg.tool_calls:
-                for tc in sub_msg.tool_calls:
-                    # Check if this is a nested transfer/delegate
-                    if "transfer_to" in tc["name"]:
-                        # Create a nested status container for the sub-agent
-                        nested_status = status.status(
-                            f"""💼 Sub Agent: {tc["name"]}""",
-                            state="running" if is_new else "complete",
-                            expanded=True,
-                        )
-
-                        # Recursively handle sub-agents of this sub-agent
-                        await handle_sub_agent_msgs(messages_agen, nested_status, is_new)
-                    else:
-                        # Regular tool call - create popover
-                        popover = status.popover(f"{tc['name']}", icon="🛠️")
-                        popover.write(f"**Tool:** {tc['name']}")
-                        popover.write("**Input:**")
-                        popover.write(tc["args"])
-                        # Store the popover reference using the tool call ID
-                        nested_popovers[tc["id"]] = popover
-
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except AgentClientError as error:
+        st.error(str(error))
+    except Exception:
+        logger.exception("Unexpected chat interface error")
+        st.error(PUBLIC_ERROR_MESSAGES["AGENT_EXECUTION_FAILED"])

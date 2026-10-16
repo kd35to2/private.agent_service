@@ -12,6 +12,8 @@ class AccountDatabase:
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
 
     async def setup(self) -> None:
+        import rag.models  # noqa: F401 - register knowledge-base tables
+
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
 

@@ -1,47 +1,7 @@
-# Research assistant long-term memory
+# 长期记忆与知识库
 
-The research assistant reads user memories before each model call. Its tools can save,
-list, update, and delete explicitly requested facts and preferences. Memories live in
-the namespace `("users", user_id, "research-assistant", "memories")`, independent of
-the conversation's `thread_id`. Other agents do not automatically use these memories.
+当前仓库只保留 RAG Agent。原研究助手的 remember/recall/forget 工具已移除，历史 Store 数据未删除。
 
-## PostgreSQL configuration
+会话 checkpoint 继续保存对话历史；文档知识库由 PostgreSQL 文档表和 Chroma 索引管理，两者不等同于个人偏好记忆。
 
-Configure `.env` (never commit it):
-
-```dotenv
-DATABASE_TYPE=postgres
-POSTGRES_HOST=127.0.0.1
-POSTGRES_PORT=5432
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=<your local database password>
-POSTGRES_DB=agent_service
-POSTGRES_IMAGE=postgres:16-alpine
-```
-
-Start only the database container, leaving the Python services running locally:
-
-```powershell
-docker compose up -d postgres
-```
-
-Restart the backend after changing `.env`. The existing service lifespan initializes
-the PostgreSQL checkpointer and store tables. Both survive backend restarts; the Docker
-database uses the existing `postgres_data` volume. Switching from SQLite does not migrate
-old conversations. Keep `checkpoints.db` to retain that history.
-
-## Try it
-
-Choose `research-assistant`. Say "Remember that I prefer Chinese and Python examples."
-The assistant should call `remember_memory`. Start a new chat with the same `user_id`
-and ask what preferences it remembers. Then ask it to forget the preference; it should
-use `forget_memory`. `recall_memories` lists keys when a specific key is needed.
-
-For API calls, explicitly provide a stable `user_id` and change only `thread_id` when
-starting another conversation. The current Streamlit app includes `user_id` in its URL;
-keep that URL/user ID when reopening it. This ID is not authenticated by the service.
-
-The model receives up to 50 saved memory entries as JSON in its system prompt. This is
-key-value memory, not semantic vector search or automatic storage of entire conversations.
-Writes happen only through tools; merely configuring the Store does not save preferences.
-SQLite mode still uses an in-memory Store and loses these memories on backend restart.
+知识库按登录账号隔离，具体实现见 [RAG 说明](RAG_Assistant.md)。未来需要记住用户偏好时，可在独立的用户命名空间下重新接入 Store，避免把个人记忆混入文档证据。

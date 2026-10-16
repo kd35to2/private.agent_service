@@ -19,7 +19,7 @@ button,.chat{display:inline-block;background:#245bcc;color:white;border:0;border
 .secondary{background:#526178}#message{white-space:pre-wrap;min-height:24px}small{color:#526178}a{color:#245bcc}
 [hidden]{display:none!important}@media(max-width:600px){.forms{grid-template-columns:1fr}}
 </style></head><body><main><h1>你的 Agent 账号</h1>
-<p>登录同一账号，找回历史会话和长期记忆。</p>
+<p>登录同一账号，访问你的个人知识库和历史会话。</p>
 <p id="message" role="status" aria-live="polite"></p>
 <section id="guest"><div class="forms">
 <form id="login"><h2>登录</h2><label for="login-name">用户名</label>

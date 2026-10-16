@@ -23,7 +23,9 @@ from langchain_core.runnables import RunnableConfig
 from langfuse.langchain import CallbackHandler  # type: ignore[import-untyped]
 
 from agents import DEFAULT_AGENT, AgentGraph, get_agent
+from agents.tools import ensure_rag_available
 from core import settings
+from schema.errors import PUBLIC_ERROR_MESSAGES
 from service.account_auth import authorize_thread
 from service.utils import ensure_model_available
 
@@ -89,6 +91,15 @@ async def _event_stream(
         # event firehose (e.g. for the AG-UI Event Inspector).
         if event.type == EventType.RAW:
             continue
+        event = event.model_copy(update={"raw_event": None})
+        if event.type == EventType.RUN_ERROR:
+            logger.error("AG-UI run failed: %s", event.message)
+            event = event.model_copy(
+                update={
+                    "message": PUBLIC_ERROR_MESSAGES["AGENT_EXECUTION_FAILED"],
+                    "code": "AGENT_EXECUTION_FAILED",
+                }
+            )
         yield encoder.encode(event)
 
 
@@ -109,6 +120,8 @@ async def agui_run(
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
 
+    if agent_id == "rag-assistant":
+        ensure_rag_available()
     config = _base_config(input_data, agent_id)
     user = getattr(request.state, "user", None)
     if user is not None:
