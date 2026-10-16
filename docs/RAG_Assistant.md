@@ -5,7 +5,7 @@
 ## 分层
 
 ```text
-Streamlit 聊天 / 浏览器知识库管理页
+Vue 工作台（聊天 / 文档管理 / 检索验证）
   → FastAPI：登录、账号归属、输入校验
   → rag.documents.KnowledgeBase：文档版本、检索与来源服务
       → PostgreSQL / SQLAlchemy：文档、原文件、版本、片段、处理状态
@@ -19,7 +19,7 @@ Streamlit 聊天 / 浏览器知识库管理页
 
 ## 私有知识库与登录
 
-启用 `USER_AUTH_ENABLED=true` 和 PostgreSQL。在 `/account` 登录后，访问 `/knowledge`：可以上传 PDF、DOCX、UTF-8 TXT / Markdown，查看文档版本、片段，更新、删除、重新索引与检索验证。
+启用 `USER_AUTH_ENABLED=true` 和 PostgreSQL。在 Vue 工作台登录后，进入「我的文档」：可以上传 PDF、DOCX、UTF-8 TXT / Markdown，查看文档版本、片段，更新、删除、重新索引与检索验证。旧版后端 `/account` 和 `/knowledge` 页面仍作为兼容入口保留。
 
 所有知识库 API 通过 Cookie 或 Bearer 登录会话认证；`owner_id` 由服务器获取，不接收客户端声明。向量查询限定 owner 和当前有效版本；BM25 仅加载该账号的有效片段。不存在或无权访问的文档都返回 404。没有登录的请求返回 401。原文件、正文、引用接口同样按归属检查。
 

@@ -191,6 +191,8 @@ privatecredentials/*
 # Node (scripts/agui-client)
 node_modules/
 package-lock.json
+!frontend/package-lock.json
+frontend/dist/
 
 # Live-app smoke test failure screenshot (scripts/smoke_live_app.py)
 smoke_live_app_failure.png

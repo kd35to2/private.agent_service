@@ -1,6 +1,8 @@
 .git
 .gitignore
 .env
+**/.env.local
+**/.env.*.local
 **/__pycache__
 **/*.pyc
 **/*.pyo
@@ -11,3 +13,7 @@ venv
 .venv
 *.db
 privatecredentials/*
+**/node_modules
+frontend/dist
+.local
+chroma_db

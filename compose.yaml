@@ -64,34 +64,29 @@ services:
         - path: src/rag/
           action: sync+restart
           target: /app/rag/
-  streamlit_app:
+  web_frontend:
     build:
       context: .
-      dockerfile: docker/Dockerfile.app
+      dockerfile: docker/Dockerfile.frontend
     ports:
-      - "${APP_PORT:-8501}:8501"
+      - "${APP_PORT:-8502}:80"
     depends_on:
-      - agent_service
+      agent_service:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
       interval: 5s
       timeout: 5s
       retries: 5
-    environment:
-      - AGENT_URL=http://agent_service:8080
-      - USER_AUTH_ENABLED=${USER_AUTH_ENABLED:-false}
-      - PUBLIC_AGENT_URL=${PUBLIC_AGENT_URL:-http://127.0.0.1:8080}
     develop:
       watch:
-        - path: src/client/
-          action: sync+restart
-          target: /app/client/
-        - path: src/schema/
-          action: sync+restart
-          target: /app/schema/
-        - path: src/streamlit_app.py
-          action: sync+restart
-          target: /app/streamlit_app.py
+        - path: frontend/
+          action: rebuild
+          ignore:
+            - node_modules/
+            - dist/
+        - path: docker/frontend.conf
+          action: rebuild
 
 volumes:
   postgres_data:
